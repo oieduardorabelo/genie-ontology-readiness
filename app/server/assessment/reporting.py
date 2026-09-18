@@ -21,6 +21,42 @@ def _fmt_signal(sig: dict) -> str:
     return f"{head} — {detail}" if detail else head
 
 
+def assessment_context_markdown(sc: dict) -> str:
+    """Describe the identity and actual assessment scope in human-readable reports."""
+    metadata = sc.get("run_metadata") or {}
+    connection = metadata.get("connection") or {}
+    identity = metadata.get("identity") or {}
+    scope = metadata.get("scope") or {}
+    activity = scope.get("activity") or {}
+    catalogs = scope.get("metadata") or {}
+    fields = []
+    assessed_at = (sc.get("overall") or {}).get("assessed_at")
+    if assessed_at:
+        fields.append(("Assessed at (UTC)", assessed_at))
+    if metadata:
+        activity_text = "All workspaces" if activity.get("mode") == "all" else (
+            f"{activity.get('mode', '')}: {', '.join(activity.get('workspace_ids', []))}"
+        )
+        fields.extend([
+            ("Workspace host", connection.get("host")),
+            ("Profile", connection.get("profile") or "Unified authentication"),
+            ("SQL warehouse", connection.get("warehouse_id")),
+            ("Authentication", connection.get("auth_type")),
+            ("Identity type", identity.get("type")),
+            ("Identity", identity.get("name") or "Unresolved"),
+            ("Principal ID", identity.get("id") or "Unresolved"),
+            ("Activity scope", activity_text),
+            ("Activity selection", activity.get("selection")),
+            ("Resolved catalogs", ", ".join(catalogs.get("resolved_catalogs") or []) or "None resolved"),
+            ("Metadata source", catalogs.get("source") or "Unresolved"),
+        ])
+    if not fields:
+        return ""
+    lines = ["## Assessment context", "", "| Setting | Value |", "| --- | --- |"]
+    lines.extend(f"| {_cell(name)} | {_cell(value)} |" for name, value in fields)
+    return "\n".join(lines) + "\n\n"
+
+
 def assessment_markdown(sc: dict) -> str:
     """A deterministic Markdown readout of the scorecard: overall + stage, the
     per-pillar table (score / level / weight), top gaps, then per-pillar detail
@@ -31,7 +67,10 @@ def assessment_markdown(sc: dict) -> str:
     pillars = sc.get("pillars", []) or []
     top_gaps = sc.get("top_gaps", []) or []
 
-    lines: list[str] = []
+    context = assessment_context_markdown(sc)
+    lines: list[str] = [context.rstrip()] if context else []
+    if lines:
+        lines.append("")
 
     # Overall readiness. Rendered defensively: a legacy/degraded snapshot may carry
     # pillars but a missing or partial `overall`, and the readout must never print a
@@ -144,5 +183,3 @@ def build_assessment_pdf_html(sc: dict, title: str) -> str:
     subtitle = "Genie Ontology Readiness assessment · Databricks"
     body_html = markdown_to_safe_html(assessment_markdown(sc or {}))
     return build_pdf_document(title or ASSESSMENT_TITLE, body_html, subtitle=subtitle)
-
-

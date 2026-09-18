@@ -22,7 +22,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 _NO_CACHE = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
 
 from server.routes import router
-from server.routes._shared import _ai_model, DEFAULT_LLM_MODEL, is_available_model
+from server.routes._shared import _ai_model, DEFAULT_LLM_MODEL
+from server.ai_client import ModelClient
+from server.config import get_workspace_host, get_auth_headers
 from server.config import USE_LAKEBASE
 from server.security import (
     BodySizeLimitMiddleware,
@@ -77,12 +79,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"SQL warehouse warmup failed (non-fatal): {e}")
 
-    await asyncio.gather(init_lakebase(), warmup_warehouse())
-    yield
-
-    if USE_LAKEBASE:
-        from server.lakebase_client import close_pool
-        await close_pool()
+    app.state.model_client = ModelClient(get_workspace_host, get_auth_headers)
+    try:
+        await asyncio.gather(init_lakebase(), warmup_warehouse())
+        yield
+    finally:
+        await app.state.model_client.close_llm_session()
+        if USE_LAKEBASE:
+            from server.lakebase_client import close_pool
+            await close_pool()
 
 
 app = FastAPI(title="Genie Ontology Readiness", version="1.0.0", lifespan=lifespan)
@@ -110,7 +115,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         # cached) — NOT the static AI_MODELS label map, which only covers a few
         # known families. Validating against the static map silently dropped
         # every other live model back to the default.
-        if not await is_available_model(model):
+        if not await request.app.state.model_client.is_available_model(model):
             model = DEFAULT_LLM_MODEL
         token = _ai_model.set(model)
         try:

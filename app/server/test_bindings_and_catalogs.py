@@ -3,7 +3,19 @@ from unittest.mock import AsyncMock, patch
 
 from server.bindings import _select_accessible
 from server.routes import catalogs as cat_route
-from server.assessment import probes
+from server.assessment.probes import AssessmentProbes, ProbeDependencies
+from server.workspace_filter import get_workspace_filter, get_catalog_scope
+
+
+def suite(execute=None, accessible=None, defaults=()):
+    return AssessmentProbes(ProbeDependencies(
+        execute_sql=execute or AsyncMock(return_value=[]),
+        get_workspace_host=lambda: "", get_auth_headers=lambda **kw: {},
+        get_user_token=lambda: None, accessible_catalogs=accessible or AsyncMock(return_value=None),
+        record_rest_identity=lambda: None, workspace_filter=get_workspace_filter(),
+        catalog_scope=tuple(get_catalog_scope() or ()) or None, default_catalogs=defaults,
+    ))
+
 from server.workspace_filter import set_workspace_filter, set_catalog_scope
 
 
@@ -67,27 +79,23 @@ class ScopedCatalogsPrecedenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_override_wins(self):
         set_catalog_scope(["c1", "c2"])
         set_workspace_filter({"mode": "include", "workspace_ids": ["111"]})
-        self.assertEqual(await probes._scoped_catalogs(), ["c1", "c2"])
+        self.assertEqual(await suite()._scoped_catalogs(), ["c1", "c2"])
 
     async def test_bindings_when_workspace_include(self):
         set_catalog_scope(None)
         set_workspace_filter({"mode": "include", "workspace_ids": ["111"]})
         acc = AsyncMock(return_value=[{"name": "bound_a", "access": "READ_WRITE", "isolation": "ISOLATED"}])
-        with patch.object(probes, "accessible_catalogs", acc):
-            self.assertEqual(await probes._scoped_catalogs(), ["bound_a"])
+        self.assertEqual(await suite(accessible=acc)._scoped_catalogs(), ["bound_a"])
 
     async def test_falls_back_to_env_when_bindings_unreadable(self):
         set_catalog_scope(None)
         set_workspace_filter({"mode": "include", "workspace_ids": ["111"]})
-        with patch.object(probes, "accessible_catalogs", AsyncMock(return_value=None)), \
-             patch.object(probes, "ASSESS_CATALOGS", ["env_cat"]):
-            self.assertEqual(await probes._scoped_catalogs(), ["env_cat"])
+        self.assertEqual(await suite(defaults=("env_cat",))._scoped_catalogs(), ["env_cat"])
 
     async def test_none_when_nothing_scoped(self):
         set_catalog_scope(None)
         set_workspace_filter(None)
-        with patch.object(probes, "ASSESS_CATALOGS", []):
-            self.assertIsNone(await probes._scoped_catalogs())
+        self.assertIsNone(await suite()._scoped_catalogs())
 
 
 if __name__ == "__main__":

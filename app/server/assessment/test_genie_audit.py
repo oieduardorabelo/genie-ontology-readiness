@@ -1,7 +1,19 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
-from server.assessment import probes
+from server.assessment.probes import AssessmentProbes, ProbeDependencies
+from server.workspace_filter import get_workspace_filter, get_catalog_scope
+
+
+def suite(execute=None, accessible=None, defaults=()):
+    return AssessmentProbes(ProbeDependencies(
+        execute_sql=execute or AsyncMock(return_value=[]),
+        get_workspace_host=lambda: "", get_auth_headers=lambda **kw: {},
+        get_user_token=lambda: None, accessible_catalogs=accessible or AsyncMock(return_value=None),
+        record_rest_identity=lambda: None, workspace_filter=get_workspace_filter(),
+        catalog_scope=tuple(get_catalog_scope() or ()) or None, default_catalogs=defaults,
+    ))
+
 from server.workspace_filter import set_workspace_filter
 
 
@@ -13,8 +25,7 @@ class GenieAuditCountsTest(unittest.IsolatedAsyncioTestCase):
         execute = AsyncMock(return_value=[{"total": "3", "active_30d": "2"}])
         set_workspace_filter({"mode": "include", "workspace_ids": ["1444828305810485"]})
 
-        with patch.object(probes, "execute_sql", execute):
-            result = await probes._genie_audit_counts()
+        result = await suite(execute)._genie_audit_counts()
 
         self.assertEqual(result, {"total": 3, "active_30d": 2})
         query = execute.await_args.args[0]
@@ -26,8 +37,7 @@ class GenieAuditCountsTest(unittest.IsolatedAsyncioTestCase):
         execute = AsyncMock(return_value=[{"total": "1", "active_30d": "0"}])
         set_workspace_filter({"mode": "exclude", "workspace_ids": ["111", "222"]})
 
-        with patch.object(probes, "execute_sql", execute):
-            await probes._genie_audit_counts()
+        await suite(execute)._genie_audit_counts()
 
         query = execute.await_args.args[0]
         self.assertIn("CAST(workspace_id AS STRING) NOT IN (:wsf_0, :wsf_1)", query)
@@ -37,8 +47,7 @@ class GenieAuditCountsTest(unittest.IsolatedAsyncioTestCase):
         execute = AsyncMock(return_value=[{"total": 0, "active_30d": 0}])
         set_workspace_filter(None)
 
-        with patch.object(probes, "execute_sql", execute):
-            await probes._genie_audit_counts()
+        await suite(execute)._genie_audit_counts()
 
         self.assertNotIn("wsf_", execute.await_args.args[0])
         self.assertIsNone(execute.await_args.kwargs["parameters"])
@@ -46,8 +55,7 @@ class GenieAuditCountsTest(unittest.IsolatedAsyncioTestCase):
     async def test_degrades_gracefully_when_audit_query_fails(self):
         execute = AsyncMock(side_effect=TimeoutError("audit query timed out"))
 
-        with patch.object(probes, "execute_sql", execute):
-            result = await probes._genie_audit_counts()
+        result = await suite(execute)._genie_audit_counts()
 
         self.assertEqual(result, {"total": None, "active_30d": None})
 
@@ -64,8 +72,7 @@ class GenieAuditRowsTest(unittest.IsolatedAsyncioTestCase):
             {"agent": "TD US Portfolio Assistant", "space_id": "01f1a", "events": "1158", "active_30d": 1},
             {"agent": "01f1b", "space_id": "01f1b", "events": "5", "active_30d": 0},
         ])
-        with patch.object(probes, "execute_sql", execute):
-            rows = await probes._genie_audit_rows()
+        rows = await suite(execute)._genie_audit_rows()
 
         query = execute.await_args.args[0]
         self.assertIn("max_by(request_params.display_name, event_time)", query)
@@ -78,8 +85,7 @@ class GenieAuditRowsTest(unittest.IsolatedAsyncioTestCase):
     async def test_scopes_name_window_to_selected_workspaces(self):
         set_workspace_filter({"mode": "include", "workspace_ids": ["7474644235756678"]})
         execute = AsyncMock(return_value=[])
-        with patch.object(probes, "execute_sql", execute):
-            await probes._genie_audit_rows()
+        await suite(execute)._genie_audit_rows()
 
         query = execute.await_args.args[0]
         # The workspace predicate is applied to BOTH the names CTE and the activity scan.

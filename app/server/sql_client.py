@@ -221,9 +221,32 @@ def _is_authz_error(exc: Exception) -> bool:
 
 async def _execute_once(query: str, parameters: Optional[dict[str, Any]], force_sp: bool) -> list[dict]:
     """Run the query once with a single resolved identity (OBO or SP)."""
-    host = get_workspace_host()
-    auth_headers = get_auth_headers(force_sp=force_sp)
+    return await _execute_statement(
+        query, parameters, get_workspace_host(), WAREHOUSE_ID,
+        get_auth_headers(force_sp=force_sp), CATALOG, SCHEMA,
+    )
 
+
+class StatementExecutionClient:
+    """SQL client for an explicitly configured connection, with no App auth state."""
+
+    def __init__(self, host: str, warehouse_id: str, auth_headers, catalog="system", schema="information_schema"):
+        self.host = host
+        self.warehouse_id = warehouse_id
+        self.auth_headers = auth_headers
+        self.catalog = catalog
+        self.schema = schema
+
+    async def execute(self, query: str, parameters=None, force_sp=False, record=True) -> list[dict]:
+        if record:
+            record_query(query, parameters)
+        return await _execute_statement(
+            query, parameters, self.host, self.warehouse_id,
+            self.auth_headers(), self.catalog, self.schema,
+        )
+
+
+async def _execute_statement(query, parameters, host, warehouse_id, auth_headers, catalog, schema):
     if not host:
         raise Exception("DATABRICKS_HOST not configured")
     if not auth_headers:
@@ -235,13 +258,13 @@ async def _execute_once(query: str, parameters: Optional[dict[str, Any]], force_
         "Content-Type": "application/json",
     }
 
-    logger.info(f"Executing SQL against warehouse {WAREHOUSE_ID}, host: {host}")
+    logger.info(f"Executing SQL against warehouse {warehouse_id}, host: {host}")
 
     payload = {
-        "warehouse_id": WAREHOUSE_ID,
+        "warehouse_id": warehouse_id,
         "statement": query,
-        "catalog": CATALOG,
-        "schema": SCHEMA,
+        "catalog": catalog,
+        "schema": schema,
         "wait_timeout": "50s",
         "disposition": "INLINE",
         "format": "JSON_ARRAY",

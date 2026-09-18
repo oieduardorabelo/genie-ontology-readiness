@@ -16,10 +16,9 @@ from server.pillars import (
     readiness_stage,
     readiness_guidance,
 )
-from server.assessment.probes import PROBES, prime_request_sources, _progress_sink
+from server.assessment.probes import AssessmentProbes
 from server.sql_client import (
     start_identity_capture,
-    resolved_identity,
     start_query_capture,
     captured_queries,
 )
@@ -108,7 +107,7 @@ def _finalize(pillars_out: list[dict]) -> dict:
     }
 
 
-async def _run_probe(key: str) -> tuple[str, dict]:
+async def _run_probe(key: str, suite: AssessmentProbes) -> tuple[str, dict]:
     """Run a single probe, converting any exception into an unavailable result.
 
     Each probe runs in its own task (gather/ensure_future copy the context), so
@@ -118,13 +117,13 @@ async def _run_probe(key: str) -> tuple[str, dict]:
     start_identity_capture()
     start_query_capture()
     try:
-        probe = await PROBES[key]()
+        probe = await suite.probes[key]()
     except Exception as e:
         # This note is returned to the browser and stored in the saved snapshot,
         # so it carries a log reference rather than the exception text (CWE-209).
         reference, _ = safe_error(e, f"probe {key} raised", logger)
         probe = _error_probe(f"This signal could not be assessed. (reference {reference})")
-    ident = resolved_identity()
+    ident = suite.identity
     if ident is not None:
         probe = {**probe, "identity": ident}
     # Attach the SQL this probe ran (explainability), unless the probe already
@@ -134,12 +133,12 @@ async def _run_probe(key: str) -> tuple[str, dict]:
     return key, probe
 
 
-async def run_assessment() -> dict:
+async def run_assessment(suite: AssessmentProbes) -> dict:
     """Run every probe concurrently and build the full scorecard."""
-    # Resolve data sources once for this assessment; primes a request-scoped cache
+    # Resolve data sources once for this assessment; primes a run-scoped cache
     # the probes reuse, so we don't re-resolve per probe (a fan-out under OBO).
-    await prime_request_sources()
-    results = await asyncio.gather(*(_run_probe(k) for k in PROBES))
+    await suite.prime_request_sources()
+    results = await asyncio.gather(*(_run_probe(k, suite) for k in suite.probes))
     probe_by_key = dict(results)
     pillars_out = [
         _assemble_pillar(p, probe_by_key.get(p["key"], _error_probe("No result")))
@@ -148,7 +147,7 @@ async def run_assessment() -> dict:
     return {"pillars": pillars_out, **_finalize(pillars_out)}
 
 
-async def run_assessment_stream():
+async def run_assessment_stream(suite: AssessmentProbes):
     """Async generator: yield each pillar as its probe completes, then a final event.
 
     Yields {"type":"pillar","pillar":{...}} per pillar (in completion order), then
@@ -157,21 +156,17 @@ async def run_assessment_stream():
     """
     by_key: dict[str, dict] = {}
     # Prime the shared per-request source resolution before dispatching probes.
-    await prime_request_sources()
+    await suite.prime_request_sources()
 
-    # A single queue carries both intra-probe progress (pillar_progress) and probe
-    # completions. Priming _progress_sink BEFORE creating the probe tasks means each
-    # task inherits it (contextvars are copied at task creation), so a probe can emit
-    # progress without a changed signature. We drain the queue until every probe has
-    # reported completion — interleaving progress events as they arrive.
+    # Progress and completion events share this run's queue.
     q: asyncio.Queue = asyncio.Queue()
-    _progress_sink.set(q)
+    suite.progress_sink = q
 
     async def _runner(k: str) -> None:
-        key, probe = await _run_probe(k)
+        key, probe = await _run_probe(k, suite)
         await q.put({"kind": "done", "key": key, "probe": probe})
 
-    tasks = [asyncio.ensure_future(_runner(k)) for k in PROBES]
+    tasks = [asyncio.ensure_future(_runner(k)) for k in suite.probes]
     remaining = len(tasks)
     try:
         while remaining > 0:
@@ -186,6 +181,7 @@ async def run_assessment_stream():
                 # Already SSE-shaped progress event ({"type":"pillar_progress",...}).
                 yield item
     finally:
+        suite.progress_sink = None
         for t in tasks:
             if not t.done():
                 t.cancel()

@@ -80,5 +80,7 @@ jobs:
             reports/assessment.json
             reports/readiness.md
             reports/readiness.pdf
+            reports/csv/*.csv
+            reports/readiness-csv.zip
           if-no-files-found: warn
           retention-days: 14

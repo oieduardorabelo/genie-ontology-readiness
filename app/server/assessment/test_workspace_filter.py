@@ -2,6 +2,19 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from server.assessment import probes
+from server.assessment.probes import AssessmentProbes, ProbeDependencies
+from server.workspace_filter import get_workspace_filter, get_catalog_scope
+
+
+def suite(execute=None, accessible=None, defaults=()):
+    return AssessmentProbes(ProbeDependencies(
+        execute_sql=execute or AsyncMock(return_value=[]),
+        get_workspace_host=lambda: "", get_auth_headers=lambda **kw: {},
+        get_user_token=lambda: None, accessible_catalogs=accessible or AsyncMock(return_value=None),
+        record_rest_identity=lambda: None, workspace_filter=get_workspace_filter(),
+        catalog_scope=tuple(get_catalog_scope() or ()) or None, default_catalogs=defaults,
+    ))
+
 from server import workspace_filter as wf
 from server.workspace_filter import set_workspace_filter, workspace_predicate, is_multi_workspace
 
@@ -70,8 +83,7 @@ class AdoptionFilterTest(unittest.IsolatedAsyncioTestCase):
         # First two calls: active users + queries. Return scalars.
         execute = AsyncMock(side_effect=[[{"c": "5"}], [{"c": "50"}]])
         set_workspace_filter({"mode": "include", "workspace_ids": ["77"]})
-        with patch.object(probes, "execute_sql", execute):
-            result = await probes.probe_adoption()
+        result = await suite(execute).probe_adoption()
         self.assertTrue(result["available"])
         users_query = execute.await_args_list[0].args[0]
         self.assertIn("CAST(workspace_id AS STRING) IN (:wsf_0)", users_query)
@@ -89,8 +101,9 @@ class GenieDrillDownTest(unittest.IsolatedAsyncioTestCase):
             {"agent": "space-a", "events": "40", "active_30d": "1"},
             {"agent": "space-b", "events": "3", "active_30d": "0"},
         ])
-        with patch.object(probes, "_genie_audit_counts", counts), patch.object(probes, "_genie_audit_rows", rows):
-            result = await probes.probe_genie_agents()
+        instance = suite()
+        with patch.object(instance, "_genie_audit_counts", counts), patch.object(instance, "_genie_audit_rows", rows):
+            result = await instance.probe_genie_agents()
         dd = result["drill_down"]
         self.assertIsNotNone(dd)
         self.assertEqual(dd["rows"][0]["agent"], "space-a")

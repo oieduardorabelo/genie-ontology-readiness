@@ -82,9 +82,15 @@ assessment needs, local development, optional Lakebase history, and branding.
 ## Run an assessment outside the Databricks App
 
 The Python CLI runs the same seven-pillar assessment as the App and saves its
-results as JSON, Markdown, and a branded PDF. It calls your Databricks workspace
+results as JSON, Markdown, PDF, and CSV. It calls your Databricks workspace
 and SQL warehouse directly. You do not need an App deployment, frontend build,
-Lakebase database, or Foundation Model API access.
+Lakebase database, or Foundation Model API access for the assessment. An optional
+AI action plan uses model serving in the connected workspace.
+
+The CLI and App have separate entry points and construct their own services.
+Shared probes receive SQL, REST authentication, identity, and scope as injected
+dependencies. Each assessment owns its source cache; each model client owns its
+HTTP session and discovery cache. CLI execution does not configure App globals.
 
 For local execution, install the backend dependencies in a virtual environment
 and configure a Databricks CLI profile:
@@ -93,18 +99,23 @@ and configure a Databricks CLI profile:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r app/requirements.txt
-export DATABRICKS_CLI_PROFILE=<your-profile>
-export DATABRICKS_WAREHOUSE_ID=<warehouse-id>
 PYTHONPATH=app python -m server.assessment.cli \
+  --profile <your-profile> \
+  --warehouse-id <warehouse-id> \
   --catalogs gold,silver \
-  --workspace-ids <workspace-id> \
   --output-dir reports
 ```
 
-`--workspace-mode exclude` excludes the given workspace IDs from activity signals.
-`--title "Customer readiness"` sets the report title. Run the CLI with `--help` to
-see its arguments. Authentication also supports `DATABRICKS_HOST` with
-`DATABRICKS_TOKEN`, or the SDK's unattended OAuth authentication described below.
+Connection flags are `--profile`, `--host`, and `--warehouse-id`. Flags override
+matching environment or profile settings. A named profile supplies its own host
+and credentials; unrelated host and credential variables in the shell are
+ignored. `DATABRICKS_CLI_PROFILE` selects a profile when the flag is omitted.
+Without a named profile, the SDK uses unified authentication, including
+`DATABRICKS_HOST` with `DATABRICKS_TOKEN` or unattended OAuth as described below.
+The warehouse also accepts `DATABRICKS_WAREHOUSE_ID` or a profile's `warehouse_id`.
+
+`--title "Customer readiness"` sets the report title. Run with `--help` to see
+all arguments.
 
 ### Unattended and CI runs
 
@@ -123,9 +134,9 @@ system's secret store and configure these environment variables:
 Assign the service principal to the workspace and grant it `CAN USE` on the
 warehouse and the catalog/system-table permissions in the table below. See
 [Databricks OAuth machine-to-machine authentication](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
-for credential setup. Every read uses the configured identity's permissions.
-The existing engine calls that identity "App service principal" in some report
-labels, even when it runs outside an App.
+for credential setup. Every standalone read uses the configured identity's
+permissions. Reports identify the resolved user or service principal; they
+record an unknown identity when principal metadata cannot be read.
 
 From the repository root, a CI step can run:
 
@@ -139,9 +150,37 @@ PYTHONPATH=app python -m server.assessment.cli \
 
 The command writes:
 
-- `assessment.json`, the full scorecard, findings, metrics, and source queries.
+- `assessment.json`, the full scorecard, findings, metrics, source queries, and
+  run metadata: connection settings, principal, activity scope, resolved catalogs,
+  metadata source, and assessment timestamp. Credentials are excluded.
 - `readiness.md`, the assessment report with scores, gaps, and recommended practices.
 - `readiness.pdf`, the same report rendered with the App's PDF styling.
+- `csv/summary.csv`, one row per pillar with score, level, maturity, availability,
+  and gaps, matching the App's summary export.
+- `csv/<pillar>.csv`, each pillar's nonempty drill-down with the App's columns and units.
+- `readiness-csv.zip`, the summary and per-pillar CSVs in one archive.
+
+JSON retains all drill-downs and source queries. Markdown and PDF provide the
+summary and per-pillar findings; the CSVs provide the detailed rows.
+
+### AI action plan
+
+Add `--generate-plan` to export `action-plan.md` and `action-plan.pdf` alongside
+the assessment. The plan uses the App's prompts and deterministic overall and
+per-pillar score summary, then proposes actions grounded in the findings and
+public accelerators. It includes the run context and selected AI model.
+
+```bash
+PYTHONPATH=app python -m server.assessment.cli \
+  --profile <your-profile> --warehouse-id <warehouse-id> \
+  --generate-plan --model <chat-serving-endpoint> --output-dir reports
+```
+
+`--model` requires `--generate-plan`. Omit it to discover chat endpoints and use
+the App's default selection. The configured identity needs access to the chosen
+endpoint. The CLI makes no model requests unless plan generation is enabled.
+If generation fails or returns an empty plan, the assessment artifacts are
+retained and the command exits with code `1`.
 
 Configure your CI system to collect these files even when the command returns a
 nonzero exit code. Reports contain workspace metadata; apply your own artifact
@@ -158,11 +197,17 @@ requires a runner that can reach its endpoints.
 
 ### Scope and incomplete results
 
-With no catalog or workspace selection, the engine assesses visible catalogs
-and unfiltered activity signals. Activity can cover multiple workspaces in the
-system tables. An include filter also lets the engine derive catalog scope from
-workspace bindings when readable; explicit catalogs take precedence. Metadata
-signals remain catalog/metastore based rather than workspace specific.
+Activity defaults to the connected workspace, resolved during preflight. If its
+ID cannot be resolved, the CLI fails and asks for an explicit selection.
+`--workspace-ids 101,102` selects other workspaces; `--workspace-mode exclude`
+excludes explicitly supplied IDs. `--all-workspaces` deliberately reads activity
+across all visible workspaces and cannot be combined with `--workspace-ids`.
+
+An include filter also derives catalog scope from workspace bindings when
+readable. Explicit `--catalogs` takes precedence, followed by workspace bindings,
+`ASSESS_CATALOGS`, and visible catalog enumeration. Metadata signals remain
+catalog/metastore based rather than workspace specific. Reports record both
+activity and metadata scope.
 
 The CLI checks authentication, warehouse access with a read-only `SELECT 1`, and
 report dependencies before running the probes. Exit code `0` means success,
@@ -174,9 +219,9 @@ Unavailable pillars retain the engine's existing scoring behavior and contribute
 zero to the overall score. They appear as unavailable in the report. By default,
 the CLI saves the reports and fails the job so that an incomplete assessment
 does not pass unnoticed. Use `--allow-partial` when this is expected. This option
-does not suppress preflight, execution, or report-generation errors. Availability reflects the existing
-probe results; an available pillar can still use fallback sources or have
-individual signals missing.
+does not suppress preflight, execution, report-generation, or AI plan errors.
+Availability reflects the existing probe results; an available pillar can still
+use fallback sources or have individual signals missing.
 
 JSON and Markdown survive a PDF-generation failure; a preflight failure produces
 no new reports. The CLI replaces reports in its output directory, so use a
@@ -194,9 +239,11 @@ defaults to **on-behalf-of-user (OBO)** with an automatic **SP fallback**:
   see. If a given read fails because you lack a grant the app SP holds (system
   tables are the common case), that read **falls back to the app SP** rather than
   dropping the signal.
-- **Scheduled / unattended** — snapshot history or any background run with no user
+- **App background runs** — snapshot history or any background run with no user
   present (also local dev). With no forwarded token every read runs as the app
   **service principal (SP)**, so the SP must hold the grants below.
+- **Standalone CLI** — reads run as the configured SDK identity, which can be a
+  user profile or service principal. There is no App identity fallback.
 
 A few reads are **always** the SP (they can't run OBO): the Genie REST API (not
 covered by the `sql` user scope) and Lakebase credential minting.

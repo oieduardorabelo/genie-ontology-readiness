@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from server.routes.dependencies import create_app_assessment
 from server.assessment.compare import compare_snapshots
 from server.assessment.scoring import run_assessment, run_assessment_stream
 from server.assessment.reporting import ASSESSMENT_TITLE, build_assessment_pdf_html
@@ -75,7 +76,7 @@ async def assess_get(
         cached = _cache_get("assess:technical")
         if cached is not None:
             return cached
-    result = await run_assessment()
+    result = await run_assessment(create_app_assessment())
     if cacheable:
         _cache_set("assess:technical", result)
     return result
@@ -105,7 +106,7 @@ async def assess_stream(
         set_workspace_filter(wsf)
         set_catalog_scope(cat_scope)
         try:
-            async for event in run_assessment_stream():
+            async for event in run_assessment_stream(create_app_assessment()):
                 if event.get("type") == "complete":
                     scorecard = {
                         "overall": event["overall"],

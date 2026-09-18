@@ -1,20 +1,21 @@
 """Config endpoint — describes pillars, questions, models, and app capabilities to the UI."""
 
 import os
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from server.pillars import PILLARS, LEVEL_LABELS
-from server.routes._shared import list_available_models, resolve_default_model
+from server.ai_client import ModelClient, resolve_default_model
+from server.routes.dependencies import get_model_client
 from server.config import USE_LAKEBASE, GENIE_SPACE_ID, WORKSPACE_ID, ASSESS_CATALOGS, get_cloud_provider
 
 router = APIRouter()
 
 
 @router.get("/config")
-async def get_config():
+async def get_config(client: ModelClient = Depends(get_model_client)):
     """Everything the frontend needs to render the app shell."""
     # Fetch live available models from workspace serving endpoints
-    ai_models = await list_available_models()
+    ai_models = await client.list_available_models()
     default_model = await resolve_default_model(ai_models)
 
     return {

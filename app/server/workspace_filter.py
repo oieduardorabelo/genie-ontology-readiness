@@ -69,7 +69,11 @@ def is_multi_workspace() -> bool:
     """True when more than one workspace is explicitly in scope — the signal to
     add a per-workspace dimension to the activity drill-downs. An exclude filter
     (or no filter) leaves the scope open-ended, which also counts as multi."""
-    f = _workspace_filter.get()
+    return multiple_workspaces(_workspace_filter.get())
+
+
+def multiple_workspaces(f: dict | None) -> bool:
+    """Whether a selected scope can contain multiple workspaces."""
     if f is None:
         return True  # no filter → account-wide, so many workspaces
     if f["mode"] == "exclude":
@@ -86,7 +90,11 @@ def workspace_predicate(column: str = "workspace_id", prefix: str = "wsf") -> tu
     the string ids from ``system.access.workspaces_latest`` compare consistently.
     A trailing space keeps it safe to interpolate mid-WHERE.
     """
-    f = _workspace_filter.get()
+    return predicate_for_filter(_workspace_filter.get(), column, prefix)
+
+
+def predicate_for_filter(f: dict | None, column="workspace_id", prefix="wsf") -> tuple[str, dict]:
+    """Build the predicate for an explicitly supplied scope."""
     if not f:
         return "", {}
     ids = f["workspace_ids"]

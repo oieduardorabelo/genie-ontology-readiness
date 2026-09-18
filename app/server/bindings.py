@@ -80,39 +80,49 @@ async def _get_json(session: aiohttp.ClientSession, url: str, headers: dict) -> 
 async def accessible_catalogs(workspace_ids: set[str]) -> Optional[list[dict]]:
     """Catalogs accessible from ``workspace_ids`` per UC bindings, or None if the
     catalog/binding APIs can't be read (caller falls back to enumeration)."""
-    host = get_workspace_host()
-    headers = get_auth_headers()
-    if not host or not headers:
-        return None
+    return await CatalogBindingsClient(get_workspace_host, get_auth_headers, record_rest_identity).accessible_catalogs(workspace_ids)
 
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=20)
-    ) as session:
-        cat_data = await _get_json(session, f"{host}/api/2.1/unity-catalog/catalogs", headers)
-        if not isinstance(cat_data, dict):
+
+class CatalogBindingsClient:
+    def __init__(self, host_provider, auth_provider, record_identity):
+        self.host_provider = host_provider
+        self.auth_provider = auth_provider
+        self.record_identity = record_identity
+
+    async def accessible_catalogs(self, workspace_ids: set[str]) -> Optional[list[dict]]:
+        host = self.host_provider()
+        headers = self.auth_provider()
+        if not host or not headers:
             return None
-        catalogs_meta = [
-            {"name": c.get("name"), "isolation_mode": c.get("isolation_mode")}
-            for c in (cat_data.get("catalogs") or [])
-            if c.get("name") and c.get("name") not in _INTERNAL
-        ]
-        if not catalogs_meta:
-            return []
 
-        # Only ISOLATED catalogs need a bindings lookup (OPEN is reachable from all).
-        isolated = [c["name"] for c in catalogs_meta if (c.get("isolation_mode") or "OPEN").upper() == "ISOLATED"]
-        sem = asyncio.Semaphore(_BINDINGS_CONCURRENCY)
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=20)
+        ) as session:
+            cat_data = await _get_json(session, f"{host}/api/2.1/unity-catalog/catalogs", headers)
+            if not isinstance(cat_data, dict):
+                return None
+            catalogs_meta = [
+                {"name": c.get("name"), "isolation_mode": c.get("isolation_mode")}
+                for c in (cat_data.get("catalogs") or [])
+                if c.get("name") and c.get("name") not in _INTERNAL
+            ]
+            if not catalogs_meta:
+                return []
 
-        async def _bindings(name: str) -> tuple[str, list[dict]]:
-            async with sem:
-                d = await _get_json(session, f"{host}/api/2.1/unity-catalog/bindings/catalog/{name}", headers)
-                return name, (d.get("bindings", []) if isinstance(d, dict) else [])
+            # Only ISOLATED catalogs need a bindings lookup (OPEN is reachable from all).
+            isolated = [c["name"] for c in catalogs_meta if (c.get("isolation_mode") or "OPEN").upper() == "ISOLATED"]
+            sem = asyncio.Semaphore(_BINDINGS_CONCURRENCY)
 
-        results = await asyncio.gather(*(_bindings(n) for n in isolated)) if isolated else []
-        bindings_by_catalog = dict(results)
+            async def _bindings(name: str) -> tuple[str, list[dict]]:
+                async with sem:
+                    d = await _get_json(session, f"{host}/api/2.1/unity-catalog/bindings/catalog/{name}", headers)
+                    return name, (d.get("bindings", []) if isinstance(d, dict) else [])
 
-    record_rest_identity()
-    return _select_accessible(catalogs_meta, bindings_by_catalog, {str(w) for w in workspace_ids})
+            results = await asyncio.gather(*(_bindings(n) for n in isolated)) if isolated else []
+            bindings_by_catalog = dict(results)
+
+        self.record_identity()
+        return _select_accessible(catalogs_meta, bindings_by_catalog, {str(w) for w in workspace_ids})
 
 
 async def all_catalogs() -> Optional[list[dict]]:
