@@ -22,6 +22,8 @@ app/app.yml
 # Local env
 .env
 *.local
+# Unattended assessment artifacts contain workspace metadata.
+/reports/
 # Local-only screenshots (not checked in)
 docs/screenshots/
 # Screen-recording sources (only the generated GIFs are committed)

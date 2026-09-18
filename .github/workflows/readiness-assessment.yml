@@ -1,0 +1,79 @@
+name: Readiness assessment
+
+on:
+  workflow_dispatch:
+    inputs:
+      catalogs:
+        description: Comma-separated catalogs; blank uses repository variable ASSESS_CATALOGS
+        type: string
+        required: false
+      workspace_ids:
+        description: Comma-separated workspace IDs; blank uses repository variable ASSESS_WORKSPACE_IDS
+        type: string
+        required: false
+      workspace_mode:
+        description: Include or exclude the selected workspaces from activity signals
+        type: choice
+        options:
+          - include
+          - exclude
+        default: include
+      allow_partial:
+        description: Allow unavailable pillars without failing the job
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  assess:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+      - name: Install backend and report dependencies
+        run: python -m pip install -r app/requirements.txt
+      - name: Run assessment and export reports
+        env:
+          PYTHONPATH: app
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          DATABRICKS_AUTH_TYPE: oauth-m2m
+          ASSESS_CATALOGS_INPUT: ${{ inputs.catalogs || vars.ASSESS_CATALOGS }}
+          ASSESS_WORKSPACE_IDS_INPUT: ${{ inputs.workspace_ids || vars.ASSESS_WORKSPACE_IDS }}
+          ASSESS_WORKSPACE_MODE_INPUT: ${{ inputs.workspace_mode }}
+          ASSESS_ALLOW_PARTIAL_INPUT: ${{ inputs.allow_partial }}
+        shell: bash
+        run: |
+          args=(--output-dir reports --workspace-mode "$ASSESS_WORKSPACE_MODE_INPUT")
+          if [[ -n "$ASSESS_CATALOGS_INPUT" ]]; then
+            args+=(--catalogs "$ASSESS_CATALOGS_INPUT")
+          fi
+          if [[ -n "$ASSESS_WORKSPACE_IDS_INPUT" ]]; then
+            args+=(--workspace-ids "$ASSESS_WORKSPACE_IDS_INPUT")
+          fi
+          if [[ "$ASSESS_ALLOW_PARTIAL_INPUT" == "true" ]]; then
+            args+=(--allow-partial)
+          fi
+          python -m server.assessment.cli "${args[@]}"
+      - name: Upload assessment artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/assessment.json
+            reports/readiness.md
+            reports/readiness.pdf
+          if-no-files-found: warn
+          retention-days: 14

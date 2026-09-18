@@ -197,7 +197,7 @@ def _overall_diff(base_over: dict, cur_over: dict) -> dict:
 
 
 def compare_snapshots(baseline: dict, current: dict) -> dict:
-    """Diff two snapshot dicts (each ``{id, created_at, scorecard}``) → a compare result.
+    """Diff two snapshots containing id, created_at, and scorecard → a compare result.
 
     Deterministic and side-effect free: it reads only the stored scorecards. The
     caller is responsible for loading both snapshots for the requesting identity.

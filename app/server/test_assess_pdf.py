@@ -9,11 +9,11 @@ Markdown carries the real numbers, unavailable pillars are labeled (not shown as
 
 import unittest
 
-from server.routes.assess import (
-    _assessment_markdown,
-    _build_assessment_pdf_html,
-    _assessment_filename,
+from server.assessment.reporting import (
+    assessment_markdown as _assessment_markdown,
+    build_assessment_pdf_html as _build_assessment_pdf_html,
 )
+from server.routes.assess import _assessment_filename
 from server.pdf import block_external_resources
 
 

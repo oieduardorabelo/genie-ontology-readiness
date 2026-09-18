@@ -1,7 +1,8 @@
 # Genie Ontology Readiness
 
-A self-contained Databricks App that helps a customer **prepare for Genie Ontology**.
-Deploy it into a workspace and it will:
+A readiness assessment that helps a customer **prepare for Genie Ontology**.
+Run it as a Databricks App for the interactive experience, or as a CI job to save
+assessment reports. The app will:
 
 - **Assess** the live environment and score maturity across the readiness pillars
   Genie Ontology depends on (Unity Catalog, metadata, relationships, metrics /
@@ -77,6 +78,101 @@ per target so a deploy can never rename or delete another environment's app. Kee
 
 See **[CLAUDE.md](./CLAUDE.md)** for prerequisites, the service-principal grants the
 assessment needs, local development, optional Lakebase history, and branding.
+
+## Run an assessment in CI
+
+The Python CLI runs the same seven-pillar assessment as the App and saves its
+results as JSON, Markdown, and a branded PDF. It calls your Databricks workspace
+and SQL warehouse directly. You do not need an App deployment, frontend build,
+Lakebase database, or Foundation Model API access.
+
+For local execution, install the backend dependencies in a virtual environment
+and configure a Databricks CLI profile:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r app/requirements.txt
+export DATABRICKS_CLI_PROFILE=<your-profile>
+export DATABRICKS_WAREHOUSE_ID=<warehouse-id>
+PYTHONPATH=app python -m server.assessment.cli \
+  --catalogs gold,silver \
+  --workspace-ids <workspace-id> \
+  --output-dir reports
+```
+
+`--workspace-mode exclude` excludes the given workspace IDs from activity signals.
+`--title "Customer readiness"` sets the report title. Run the CLI with `--help` to
+see its arguments. Authentication also supports `DATABRICKS_HOST` with
+`DATABRICKS_TOKEN`, or the SDK's unattended OAuth authentication described below.
+
+### GitHub Actions setup
+
+Enable Actions in your fork, then configure these values under **Settings →
+Secrets and variables → Actions**:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `DATABRICKS_HOST` | Workspace URL |
+| Variable | `DATABRICKS_WAREHOUSE_ID` | Existing SQL warehouse ID |
+| Variable, optional | `ASSESS_CATALOGS` | Comma-separated catalog names |
+| Variable, optional | `ASSESS_WORKSPACE_IDS` | Comma-separated workspace IDs |
+| Secret | `DATABRICKS_CLIENT_ID` | CI service principal application ID |
+| Secret | `DATABRICKS_CLIENT_SECRET` | Databricks OAuth secret for that principal |
+
+Assign the CI service principal to the workspace and grant it `CAN USE` on the
+warehouse and the catalog/system-table permissions in the table below. The
+workflow uses [Databricks OAuth machine-to-machine authentication](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
+with `DATABRICKS_AUTH_TYPE=oauth-m2m`. Every read uses the CI identity's permissions.
+The existing engine calls that identity "App service principal" in some report
+labels, even when it runs outside an App.
+
+The workflow file must be present on the repository's default branch for the
+manual trigger to appear. Open **Actions → Readiness assessment → Run workflow**.
+You can override catalogs and workspace IDs for each run, choose include or
+exclude mode, and enable partial results. Blank catalog/workspace inputs use the
+repository variables. The workflow runs on an Ubuntu runner with Python 3.12 and
+a 30-minute job timeout. A workspace with private network access requires a
+runner that can reach its endpoints, such as a self-hosted runner.
+
+Download `readiness-<run-id>-<attempt>` from the workflow run's artifacts. It contains:
+
+- `assessment.json`, the full scorecard, findings, metrics, and source queries.
+- `readiness.md`, the assessment report with scores, gaps, and recommended practices.
+- `readiness.pdf`, the same report rendered with the App's PDF styling.
+
+Artifacts remain available for 14 days. They contain workspace metadata, so
+choose the fork's visibility and access permissions accordingly. The default
+local `reports/` directory is gitignored. This workflow is manual only. It does
+not deploy resources or generate the separate AI action plan.
+
+### Scope and incomplete results
+
+With no catalog or workspace selection, the engine assesses visible catalogs
+and unfiltered activity signals. Activity can cover multiple workspaces in the
+system tables. An include filter also lets the engine derive catalog scope from
+workspace bindings when readable; explicit catalogs take precedence. Metadata
+signals remain catalog/metastore based rather than workspace specific.
+
+The CLI checks authentication, warehouse access with a read-only `SELECT 1`, and
+report dependencies before running the probes. Exit code `0` means success,
+`1` means an assessment/report failure or an unavailable pillar, and `2` means
+configuration or preflight failure. A low readiness score alone does not fail
+the job.
+
+Unavailable pillars retain the engine's existing scoring behavior and contribute
+zero to the overall score. They appear as unavailable in the report. By default,
+the CLI saves the reports and fails the job so that an incomplete assessment
+does not pass unnoticed. Use `--allow-partial`, or the workflow's partial-results
+option, when this is expected. This option does not suppress preflight,
+execution, or report-generation errors. Availability reflects the existing
+probe results; an available pillar can still use fallback sources or have
+individual signals missing.
+
+The workflow attempts artifact upload even after a failed assessment. JSON and
+Markdown survive a PDF-generation failure; a preflight failure produces no new
+reports. The CLI replaces reports in its output directory, so use a different
+directory when you want to keep earlier runs. Lakebase history is not used.
 
 ## Permissions required
 

@@ -57,6 +57,14 @@ class ExternalResourceBlocked(Exception):
     """Raised when a document references a resource the renderer may not fetch."""
 
 
+class PdfUnavailableError(RuntimeError):
+    """Raised when the report dependencies cannot be imported."""
+
+
+class PdfRenderError(RuntimeError):
+    """Raised when the PDF engine cannot render the document."""
+
+
 def block_external_resources(uri: str, rel: str) -> str:
     """xhtml2pdf resource resolver that refuses every external reference.
 
@@ -75,6 +83,15 @@ def block_external_resources(uri: str, rel: str) -> str:
     raise ExternalResourceBlocked(uri)
 
 
+def ensure_pdf_dependencies() -> None:
+    """Check the report stack before an assessment or HTTP export starts."""
+    try:
+        import markdown  # noqa: F401 - availability probe
+        from xhtml2pdf import pisa  # noqa: F401 - availability probe
+    except Exception as e:
+        raise PdfUnavailableError("Install the markdown and xhtml2pdf report dependencies.") from e
+
+
 def pdf_export_unavailable_response() -> Optional[Response]:
     """A 503 ``Response`` if the optional PDF stack can't be imported, else ``None``.
 
@@ -86,8 +103,7 @@ def pdf_export_unavailable_response() -> Optional[Response]:
     (503) instead of raising an uncaught 500 mid-build.
     """
     try:
-        import markdown  # noqa: F401 - availability probe
-        from xhtml2pdf import pisa  # noqa: F401 - availability probe
+        ensure_pdf_dependencies()
     except Exception as e:  # pragma: no cover - depends on runtime deps
         logger.error(f"PDF engine unavailable: {e}")
         return Response(content="PDF export is unavailable on this deployment.", status_code=503)
@@ -132,6 +148,27 @@ def build_pdf_document(title: str, body_html: str, *, subtitle: str | None = Non
     )
 
 
+def render_pdf_bytes(html_doc: str) -> bytes:
+    """Render a sanitized document without requiring an HTTP response."""
+    try:
+        from xhtml2pdf import pisa
+    except Exception as e:
+        raise PdfUnavailableError("Install xhtml2pdf to render PDF reports.") from e
+
+    buf = io.BytesIO()
+    try:
+        result = pisa.CreatePDF(
+            src=html_doc, dest=buf, encoding="utf-8", link_callback=block_external_resources
+        )
+    except ExternalResourceBlocked:
+        raise
+    except Exception as e:
+        raise PdfRenderError("PDF generation failed.") from e
+    if result.err:
+        raise PdfRenderError("PDF generation failed.")
+    return buf.getvalue()
+
+
 def render_pdf_response(html_doc: str, filename_base: str) -> Response:
     """Render a branded HTML document to a PDF ``Response`` (inline for a new-tab viewer).
 
@@ -141,16 +178,10 @@ def render_pdf_response(html_doc: str, filename_base: str) -> Response:
     ``block_external_resources`` (400), and a genuine render failure is a 500.
     """
     try:
-        from xhtml2pdf import pisa
-    except Exception as e:  # pragma: no cover - depends on runtime deps
+        content = render_pdf_bytes(html_doc)
+    except PdfUnavailableError as e:  # pragma: no cover - depends on runtime deps
         logger.error(f"PDF engine unavailable: {e}")
         return Response(content="PDF export is unavailable on this deployment.", status_code=503)
-
-    buf = io.BytesIO()
-    try:
-        result = pisa.CreatePDF(
-            src=html_doc, dest=buf, encoding="utf-8", link_callback=block_external_resources
-        )
     except ExternalResourceBlocked as e:
         # Unreachable for a sanitized body; if it does fire, the document asked for
         # something it may not have, which is the caller's problem, not a server fault.
@@ -159,12 +190,12 @@ def render_pdf_response(html_doc: str, filename_base: str) -> Response:
             status_code=400,
             content={"error": "The document references an external resource and cannot be exported."},
         )
-    if result.err:
-        logger.error("PDF generation failed")
+    except PdfRenderError:
+        logger.exception("PDF generation failed")
         return Response(content="PDF generation failed", status_code=500)
     safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in filename_base).strip() or "document"
     return Response(
-        content=buf.getvalue(),
+        content=content,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe}.pdf"'},
     )
