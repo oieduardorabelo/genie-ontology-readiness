@@ -1,3 +1,8 @@
+# Optional integration example. GitHub does not load workflows from docs/examples.
+# Copy into .github/workflows in a consuming repository only when you want to enable it.
+# Repository variables: DATABRICKS_HOST, DATABRICKS_WAREHOUSE_ID.
+# Repository secrets: DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET.
+# Optional variables: ASSESS_CATALOGS, ASSESS_WORKSPACE_IDS.
 name: Readiness assessment
 
 on:
